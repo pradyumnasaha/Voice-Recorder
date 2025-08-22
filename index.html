@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Voice Recorder</title>
+  <style>
+    body {
+      overflow: hidden;
+      background: radial-gradient(circle, #3b0e68 0%, #1a084e 100%);
+      font-family: Arial, sans-serif;
+      color: white;
+      text-align: center;
+      padding-top: 50px;
+    }
+
+    .mic-icon {
+      box-sizing: border-box;
+      display: block;
+      width: 40px;
+      height: 60px;
+      border-radius: 20px;
+      border: 3px solid white;
+      position: relative;
+      margin: auto;
+    }
+
+    .mic-icon::before {
+      content: "";
+      position: absolute;
+      bottom: -20px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 20px;
+      height: 20px;
+      border-top: 3px solid white;
+    }
+
+    #micBtn {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      outline: none;
+    }
+
+    #micBtn.recording .mic-icon {
+      background: red;
+      box-shadow: 0 0 20px red;
+    }
+
+    audio {
+      display: block;
+      margin: 20px auto;
+    }
+
+    #downloadBtn {
+      display: none;
+      background: #5acee3;
+      padding: 10px 20px;
+      border-radius: 10px;
+      color: black;
+      text-decoration: none;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🎤 Voice Recorder</h1>
+
+  <button id="micBtn">
+    <div class="mic-icon"></div>
+  </button>
+
+  <audio id="audioPlayback" controls></audio><br>
+  <a id="downloadBtn">⬇ Download Recording</a>
+
+  <script>
+    let mediaRecorder;
+    let audioChunks = [];
+    const micBtn = document.getElementById("micBtn");
+    const audioPlayback = document.getElementById("audioPlayback");
+    const downloadBtn = document.getElementById("downloadBtn");
+
+    micBtn.addEventListener("click", async () => {
+      if (!mediaRecorder || mediaRecorder.state === "inactive") {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+          mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+          audioChunks = [];
+
+          mediaRecorder.ondataavailable = event => {
+            if (event.data.size > 0) {
+              audioChunks.push(event.data);
+            }
+          };
+
+          mediaRecorder.onstop = async () => {
+            const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+            console.log("🎵 Blob size:", audioBlob.size);
+
+            if (audioBlob.size > 0) {
+              // Convert webm → WAV
+              const arrayBuffer = await audioBlob.arrayBuffer();
+              const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+              const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+
+              const wavBuffer = audioBufferToWav(decoded);
+              const wavBlob = new Blob([wavBuffer], { type: "audio/wav" });
+              const audioUrl = URL.createObjectURL(wavBlob);
+
+              // Playback
+              audioPlayback.src = audioUrl;
+              audioPlayback.load();
+
+              // Download
+              downloadBtn.href = audioUrl;
+              downloadBtn.download = "recording.wav";
+              downloadBtn.style.display = "inline-block";
+            } else {
+              alert("❌ কোনো সাউন্ড ধরা পড়েনি!");
+            }
+          };
+
+          mediaRecorder.start();
+          micBtn.classList.add("recording");
+
+        } catch (error) {
+          console.error("Microphone error:", error);
+          alert("❌ মাইক্রোফোন অ্যাক্সেস পাওয়া যায়নি!");
+        }
+      } else if (mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+        micBtn.classList.remove("recording");
+      }
+    });
+
+    // Helper function: AudioBuffer → WAV
+    function audioBufferToWav(buffer) {
+      const numOfChan = buffer.numberOfChannels,
+        length = buffer.length * numOfChan * 2 + 44,
+        bufferArray = new ArrayBuffer(length),
+        view = new DataView(bufferArray),
+        channels = [],
+        sampleRate = buffer.sampleRate;
+
+      let offset = 0;
+
+      function writeString(s) {
+        for (let i = 0; i < s.length; i++) {
+          view.setUint8(offset++, s.charCodeAt(i));
+        }
+      }
+
+      writeString("RIFF");
+      view.setUint32(offset, 36 + buffer.length * numOfChan * 2, true);
+      offset += 4;
+      writeString("WAVE");
+      writeString("fmt ");
+      view.setUint32(offset, 16, true);
+      offset += 4;
+      view.setUint16(offset, 1, true);
+      offset += 2;
+      view.setUint16(offset, numOfChan, true);
+      offset += 2;
+      view.setUint32(offset, sampleRate, true);
+      offset += 4;
+      view.setUint32(offset, sampleRate * numOfChan * 2, true);
+      offset += 4;
+      view.setUint16(offset, numOfChan * 2, true);
+      offset += 2;
+      view.setUint16(offset, 16, true);
+      offset += 2;
+      writeString("data");
+      view.setUint32(offset, buffer.length * numOfChan * 2, true);
+      offset += 4;
+
+      for (let i = 0; i < numOfChan; i++) {
+        channels.push(buffer.getChannelData(i));
+      }
+
+      let interleaved = new Float32Array(buffer.length * numOfChan);
+      for (let i = 0; i < buffer.length; i++) {
+        for (let ch = 0; ch < numOfChan; ch++) {
+          interleaved[i * numOfChan + ch] = channels[ch][i];
+        }
+      }
+
+      let index = 44;
+      for (let i = 0; i < interleaved.length; i++, index += 2) {
+        let sample = Math.max(-1, Math.min(1, interleaved[i]));
+        view.setInt16(index, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      }
+
+      return bufferArray;
+    }
+  </script>
+</body>
+</html>
